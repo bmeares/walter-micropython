@@ -3,7 +3,19 @@ import gc
 import machine # type: ignore
 import time
 
-from esp32 import gpio_deep_sleep_hold # type: ignore
+try:
+    from esp32 import gpio_deep_sleep_hold # type: ignore
+except ImportError:
+    # MicroPython 1.29 builds against ESP-IDF v5.5.2, which sets
+    # SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP for the ESP32-S3; modesp32.c then
+    # compiles out the whole-GPIO-bank hold. This import is at module scope, so a
+    # bare import takes down every import of walter_modem -- and with it any app
+    # module that imports the library at startup. Per-IO hold
+    # (`Pin(..., hold=True)` / `gpio_hold_en()`) is the replacement where the bank
+    # hold is gone. Upstream issue: QuickSpot/walter-micropython#73
+    def gpio_deep_sleep_hold(_enable):
+        pass
+
 from micropython import const # type: ignore
 from .queue import Queue
 
