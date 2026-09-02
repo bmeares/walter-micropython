@@ -69,7 +69,7 @@ class Modem():
 # CORE
 # ---
 
-    async def begin(self, uart_debug: bool = False):
+    async def begin(self, uart_debug: bool = False, reset: str = 'auto'):
         """Inlcuded in Core
 
         ---
@@ -82,6 +82,11 @@ class Modem():
             uart_debug (bool, optional):
                 include the UART TX & RX in the debug logs.
                 Defaults to False.
+            reset (str, optional):
+                How to bring the modem to a known state.
+                'auto': send 'AT' first and only hardware reset a modem that does
+                not answer; 'hard': always pulse RESET_N; 'soft': 'AT^RESET'.
+                Defaults to 'auto'.
 
         Raises:
             RuntimeError: If modem reset fails
@@ -117,13 +122,18 @@ class Modem():
             bool: True on success, False on failure
         """
 
-    async def check_comm(self) -> bool:
+    async def check_comm(self, max_attempts: int = 3) -> bool:
         """Inlcuded in Core
 
         ---
 
         Sends the 'AT' command to check if the modem responds with 'OK',
         verifying communication between the ESP32 and the modem.
+
+        Args:
+            max_attempts (int, optional):
+                How many times to send the command before giving up.
+                Defaults to 3.
 
         Returns:
             bool: True on success, False on failure

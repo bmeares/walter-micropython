@@ -116,7 +116,8 @@ class ModemCore:
 #region PublicMethods
 
     async def begin(self,
-        uart_debug: bool = False
+        uart_debug: bool = False,
+        reset: str = 'auto'
     ):
         if not self.__begun:
             if __debug__:
@@ -149,10 +150,17 @@ class ModemCore:
             
             if machine.reset_cause() == machine.DEEPSLEEP_RESET:
                 await self._deep_sleep_wakeup()
+            elif reset == 'auto' and await self.check_comm(max_attempts=1):
+                # The modem already answers: a RESET_N pulse landing in its NVM
+                # writes is what bricks a GM02SP, so only sync the mirror state.
+                self._reset_mirror_state()
+            elif reset == 'soft':
+                if not await self.soft_reset():
+                    raise RuntimeError('Failed to soft reset modem')
             else:
                 if not await self.reset():
                     raise RuntimeError('Failed to reset modem')
-                
+
             if not await self.config_cme_error_reports(
                 WalterModemCMEErrorReportsType.NUMERIC):
                 raise RuntimeError('Failed to configure CME error reports')
@@ -186,10 +194,11 @@ class ModemCore:
         if cmd_result: self._reset_mirror_state()
         return cmd_result
 
-    async def check_comm(self) -> bool:
+    async def check_comm(self, max_attempts = _CMD_DEFAULT_ATTEMPTS) -> bool:
         return await self._run_cmd(
             at_cmd='AT',
-            at_rsp=b'OK'
+            at_rsp=b'OK',
+            max_attempts=max_attempts
         )
     
     async def get_clock(self, rsp: WalterModemRsp = None
