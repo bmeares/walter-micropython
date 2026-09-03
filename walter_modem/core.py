@@ -38,7 +38,7 @@ _CMD_DEFAULT_ATTEMPTS = const(3)
 _CMD_TIMEOUT = const(5)
 """The maximum number of seconds to wait."""
 _RAW_CHUNK_IDLE_MS = const(30000)
-"""How long a raw HTTP chunk may stall before it is abandoned."""
+"""How long a raw HTTP chunk may receive nothing at all before it is abandoned."""
 
 _PIN_RX = const(14)
 """The RX pin on which modem data is received."""
@@ -423,8 +423,8 @@ class ModemCore:
             incoming_uart_data = bytearray(256)
             size = await rx_stream.readinto(incoming_uart_data)
 
-            # Raw-chunk deadline: bytes are still arriving but none of them are
-            # the payload we are owed, so the transfer was cut short.
+            # Raw-chunk deadline: nothing at all has arrived for a whole idle
+            # window, so the transfer is dead rather than merely slow.
             raw_before = self.__parser_data.raw_chunk_size
             if raw_before and time.ticks_diff(
                 time.ticks_ms(), self.__parser_data.raw_chunk_deadline
@@ -529,8 +529,8 @@ class ModemCore:
                         self.__parser_data.state = WalterModemRspParserState.START_CR
                         await self._queue_rx_buffer()
 
-            # Only real payload progress renews the deadline; an unrelated URC
-            # arriving mid-chunk must not keep a dead transfer alive.
+            # In RAW state every byte read counts down raw_chunk_size, so any
+            # traffic renews the deadline; only total silence abandons the chunk.
             if raw_before and 0 < self.__parser_data.raw_chunk_size < raw_before:
                 self.__parser_data.raw_chunk_deadline = time.ticks_add(
                     time.ticks_ms(), _RAW_CHUNK_IDLE_MS
