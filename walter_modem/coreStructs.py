@@ -48,6 +48,8 @@ class WalterModemATParserData:
         self.state = WalterModemRspParserState.START_CR
         self.line = b''
         self.raw_chunk_size = 0
+        self.raw_chunk_deadline = 0
+        """ticks_ms at which an idle raw chunk is abandoned (0 = not in one)."""
 
 class WalterModemTaskQueueItem:
     def __init__(self):
