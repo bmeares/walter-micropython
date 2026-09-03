@@ -348,6 +348,13 @@ class HTTPMixin(ModemCore):
             if not cmd:
                 return
 
+            # A body the modem never finished still reaches us as a '<<<' answer
+            # once the parser abandons the raw chunk, and reporting it as a
+            # successful receive hands the application a silently short read.
+            ctx = self._http_context_list[self._http_current_profile]
+            if len(at_rsp) - 3 - len(b'\r\nOK\r\n') < ctx.content_length:
+                return WalterModemState.ERROR
+
             cmd.rsp.type = WalterModemRspType.HTTP
             cmd.rsp.http_response = WalterModemHttpResponse()
             cmd.rsp.http_response.http_status = self._http_context_list[self._http_current_profile].http_status
