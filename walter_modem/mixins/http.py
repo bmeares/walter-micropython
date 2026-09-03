@@ -229,7 +229,7 @@ class HTTPMixin(ModemCore):
 
         return await self._run_cmd(
             rsp=rsp,
-            at_cmd=f'T+SQNHTTPDISCONNECT={profile_id}',
+            at_cmd=f'AT+SQNHTTPDISCONNECT={profile_id}',
             at_rsp=b'OK'
         )
 
