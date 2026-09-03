@@ -88,6 +88,9 @@ class ModemCore:
         self.__begun = False
         """Whether or not the begin method has already been run."""
 
+        self.last_begin = None
+        """Which branch begin() took: 'warm' (no reset), 'soft' or 'hard'."""
+
         self._op_state = WalterModemOpState.MINIMUM
         """The current operational state of the modem."""
 
@@ -104,7 +107,8 @@ class ModemCore:
 #region PublicMethods
 
     async def begin(self,
-        uart_debug: bool = False
+        uart_debug: bool = False,
+        reset: str = 'auto'
     ):
         if not self.__begun:
             if __debug__:
@@ -136,11 +140,27 @@ class ModemCore:
 
             
             if machine.reset_cause() == machine.DEEPSLEEP_RESET:
+                self.last_begin = 'warm'
                 await self._deep_sleep_wakeup()
+            elif reset == 'auto' and await self.check_comm(max_attempts=1):
+                # The modem already answers: a RESET_N pulse landing in its NVM
+                # writes is what bricks a GM02SP. Clear the mirror, then read the
+                # live op/registration state back -- unlike a reset, nothing here
+                # put the modem in MINIMUM/NOT_SEARCHING, and an already-attached
+                # modem sends no +CEREG URC to correct the lie.
+                self.last_begin = 'warm'
+                self._reset_mirror_state()
+                await self._run_cmd(at_cmd='AT+CFUN?', at_rsp=b'OK')
+                await self._run_cmd(at_cmd='AT+CEREG?', at_rsp=b'OK')
+            elif reset == 'soft':
+                self.last_begin = 'soft'
+                if not await self.soft_reset():
+                    raise RuntimeError('Failed to soft reset modem')
             else:
+                self.last_begin = 'hard'
                 if not await self.reset():
                     raise RuntimeError('Failed to reset modem')
-                
+
             if not await self.config_cme_error_reports(
                 WalterModemCMEErrorReportsType.NUMERIC):
                 raise RuntimeError('Failed to configure CME error reports')
@@ -174,10 +194,11 @@ class ModemCore:
         if cmd_result: self._reset_mirror_state()
         return cmd_result
 
-    async def check_comm(self) -> bool:
+    async def check_comm(self, max_attempts = _CMD_DEFAULT_ATTEMPTS) -> bool:
         return await self._run_cmd(
             at_cmd='AT',
-            at_rsp=b'OK'
+            at_rsp=b'OK',
+            max_attempts=max_attempts
         )
     
     async def get_clock(self, rsp: WalterModemRsp = None
@@ -313,12 +334,11 @@ class ModemCore:
         return WalterModemState.OK
 
     async def __handle_cereg(self, tx_stream, cmd, at_rsp):
+        # The URC is '+CEREG: <stat>[,<tac>,<ci>,<AcT>[,<cause>,<reject>[,<t3324>,
+        # <t3412>]]]' (1, 4, 6 or 8 fields); the AT+CEREG? read form prepends <n>
+        # (2, 5, 7 or 9). Reading <n> as <stat> leaves the mirror at UNKNOWN.
         parts = at_rsp.decode().split(':')[1].split(',')
-        parts_len = len(parts)
-        if parts_len == 1 or parts_len > 2:
-            self._reg_state = int(parts[0])
-        elif parts_len == 2:
-            self._reg_state = int(parts[1])
+        self._reg_state = int(parts[1 if len(parts) in (2, 5, 7, 9) else 0])
 
 #endregion
 
