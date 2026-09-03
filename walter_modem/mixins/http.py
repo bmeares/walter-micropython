@@ -143,7 +143,10 @@ class HTTPMixin(ModemCore):
 
         async def complete_handler(result, rsp, complete_handler_arg):
             modem = complete_handler_arg
-            modem._http_context_list[modem._http_current_profile].state = WalterModemHttpContextState.IDLE
+            # The profile can already be cleared (an errored <<< answer, or
+            # http_abort); indexing with 0xff here would kill the queue worker.
+            if modem._http_current_profile <= _HTTP_MAX_CTX_ID:
+                modem._http_context_list[modem._http_current_profile].state = WalterModemHttpContextState.IDLE
             modem._http_current_profile = 0xff
 
         return await self._run_cmd(
@@ -153,6 +156,28 @@ class HTTPMixin(ModemCore):
             complete_handler=complete_handler,
             complete_handler_arg=self
         )
+
+    async def http_abort(self, profile_id: int, rsp: WalterModemRsp = None) -> bool:
+        """Abandon an in-flight query/receive on a profile.
+
+        A transfer the modem cut short leaves the context expecting a ring that
+        will not come and the AT parser waiting for payload bytes that will not
+        arrive; nothing in the library clears either, so every later command on
+        the modem hangs. Reset both so the caller can rebuild the profile and
+        retry.
+        """
+        if profile_id > _HTTP_MAX_CTX_ID:
+            if rsp: rsp.result = WalterModemState.NO_SUCH_PROFILE
+            return False
+
+        await self._abort_raw_chunk()
+
+        ctx = self._http_context_list[profile_id]
+        ctx.state = WalterModemHttpContextState.IDLE
+        ctx.connected = False
+        ctx.content_length = 0
+        self._http_current_profile = 0xff
+        return True
 
     async def http_config_profile(self,
         profile_id: int,

@@ -37,6 +37,8 @@ _CMD_DEFAULT_ATTEMPTS = const(3)
 """The default number of attempts to execute a command."""
 _CMD_TIMEOUT = const(5)
 """The maximum number of seconds to wait."""
+_RAW_CHUNK_IDLE_MS = const(30000)
+"""How long a raw HTTP chunk may stall before it is abandoned."""
 
 _PIN_RX = const(14)
 """The RX pin on which modem data is received."""
@@ -100,6 +102,9 @@ class ModemCore:
         self.__begun = False
         """Whether or not the begin method has already been run."""
 
+        self.last_begin = None
+        """Which branch begin() took: 'warm' (no reset), 'soft' or 'hard'."""
+
         self._op_state = WalterModemOpState.MINIMUM
         """The current operational state of the modem."""
 
@@ -149,6 +154,7 @@ class ModemCore:
 
             
             if machine.reset_cause() == machine.DEEPSLEEP_RESET:
+                self.last_begin = 'warm'
                 await self._deep_sleep_wakeup()
             elif reset == 'auto' and await self.check_comm(max_attempts=1):
                 # The modem already answers: a RESET_N pulse landing in its NVM
@@ -156,13 +162,16 @@ class ModemCore:
                 # live op/registration state back -- unlike a reset, nothing here
                 # put the modem in MINIMUM/NOT_SEARCHING, and an already-attached
                 # modem sends no +CEREG URC to correct the lie.
+                self.last_begin = 'warm'
                 self._reset_mirror_state()
                 await self._run_cmd(at_cmd='AT+CFUN?', at_rsp=b'OK')
                 await self._run_cmd(at_cmd='AT+CEREG?', at_rsp=b'OK')
             elif reset == 'soft':
+                self.last_begin = 'soft'
                 if not await self.soft_reset():
                     raise RuntimeError('Failed to soft reset modem')
             else:
+                self.last_begin = 'hard'
                 if not await self.reset():
                     raise RuntimeError('Failed to reset modem')
 
@@ -391,12 +400,37 @@ class ModemCore:
 
         self.__parser_data.line += bytes([data])
 
+    async def _abort_raw_chunk(self) -> bool:
+        """Abandon a raw chunk the modem never finished sending.
+
+        An aborted HTTP transfer delivers fewer bytes than Content-Length
+        promised; the parser then waits for the remainder forever and swallows
+        every later AT response as payload, so the pending receive never
+        completes. Flushing what did arrive releases the queue worker instead.
+        """
+        if not self.__parser_data.raw_chunk_size:
+            return False
+        self.__parser_data.raw_chunk_size = 0
+        self.__parser_data.raw_chunk_deadline = 0
+        self.__parser_data.state = WalterModemRspParserState.START_CR
+        await self._queue_rx_buffer()
+        return True
+
     async def _uart_reader(self):
         rx_stream = asyncio.StreamReader(self.__uart, {})
 
         while True:
             incoming_uart_data = bytearray(256)
             size = await rx_stream.readinto(incoming_uart_data)
+
+            # Raw-chunk deadline: bytes are still arriving but none of them are
+            # the payload we are owed, so the transfer was cut short.
+            raw_before = self.__parser_data.raw_chunk_size
+            if raw_before and time.ticks_diff(
+                time.ticks_ms(), self.__parser_data.raw_chunk_deadline
+            ) > 0:
+                await self._abort_raw_chunk()
+                raw_before = 0
 
             for b in incoming_uart_data[:size]:
                 if self.__parser_data.state == WalterModemRspParserState.START_CR:
@@ -454,9 +488,10 @@ class ModemCore:
 
                 elif self.__parser_data.state == WalterModemRspParserState.DATA_HTTP_START2:
                     if b == _UNICODE_SMALLER_THAN and self._http_current_profile < 3: #Max http ctx ids
-                        # FIXME: modem might block longer than cmd timeout,
-                        # will lead to retry, error etc - fix properly
                         self.__parser_data.raw_chunk_size = self._http_context_list[self._http_current_profile].content_length + len("\r\nOK\r\n")
+                        self.__parser_data.raw_chunk_deadline = time.ticks_add(
+                            time.ticks_ms(), _RAW_CHUNK_IDLE_MS
+                        )
                         self.__parser_data.state = WalterModemRspParserState.RAW
                     else:
                         self.__parser_data.state = WalterModemRspParserState.DATA
@@ -490,8 +525,16 @@ class ModemCore:
                     self.__parser_data.raw_chunk_size -= 1
 
                     if self.__parser_data.raw_chunk_size == 0:
+                        self.__parser_data.raw_chunk_deadline = 0
                         self.__parser_data.state = WalterModemRspParserState.START_CR
                         await self._queue_rx_buffer()
+
+            # Only real payload progress renews the deadline; an unrelated URC
+            # arriving mid-chunk must not keep a dead transfer alive.
+            if raw_before and 0 < self.__parser_data.raw_chunk_size < raw_before:
+                self.__parser_data.raw_chunk_deadline = time.ticks_add(
+                    time.ticks_ms(), _RAW_CHUNK_IDLE_MS
+                )
 
 
 #endregion
