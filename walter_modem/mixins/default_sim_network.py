@@ -262,7 +262,14 @@ class SimNetworkMixin(ModemCore):
         data_str = at_rsp[len(b"+SQNMONI: "):].decode()
 
         cmd.rsp.cell_information = ModemCellInformation()
-        first_key_parsed = False
+
+        # The operator name is everything before the first key ("Cc:") and may
+        # contain spaces. Guessing it from the first key longer than two
+        # characters ate "RSRP" as operator "RS" + key "RP" instead.
+        cc = data_str.find('Cc:')
+        if cc > 0:
+            cmd.rsp.cell_information.net_name = data_str[:cc].strip()[:_OPERATOR_MAX_SIZE]
+            data_str = data_str[cc:]
 
         for part in data_str.split(' '):
             if ':' not in part:
@@ -271,12 +278,6 @@ class SimNetworkMixin(ModemCore):
             pattern, value = part.split(':', 1)
             pattern = pattern.strip()
             value = value.strip()
-
-            if not first_key_parsed and len(pattern) > 2:
-                operator_name = pattern[:-2]
-                cmd.rsp.cell_information.net_name = operator_name[:_OPERATOR_MAX_SIZE]
-                pattern = pattern[-2:]
-                first_key_parsed = True
 
             if pattern == "Cc":
                 cmd.rsp.cell_information.cc = int(value, 10)
