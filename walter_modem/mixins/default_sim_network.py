@@ -72,7 +72,7 @@ class ModemBandSelection:
 
 class ModemSignalQuality:
     def __init__(self):
-        self.rsrq: int = None
+        self.rsrq: float = None
         self.rsrp: int = None
 
 class ModemCellInformation:
@@ -236,7 +236,8 @@ class SimNetworkMixin(ModemCore):
 
         parts = at_rsp.decode().split(',')
         cmd.rsp.signal_quality = ModemSignalQuality()
-        cmd.rsp.signal_quality.rsrq = -195 + (int(parts[4]) * 5)
+        # 3GPP TS 27.007 encodes RSRQ in 0.5 dB steps; expose dB.
+        cmd.rsp.signal_quality.rsrq = (-195 + (int(parts[4]) * 5)) / 10
         cmd.rsp.signal_quality.rsrp = -140 + int(parts[5])
 
         return WalterModemState.OK
