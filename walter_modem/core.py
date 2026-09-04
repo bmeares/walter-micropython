@@ -105,6 +105,11 @@ class ModemCore:
         self.last_begin = None
         """Which branch begin() took: 'warm' (no reset), 'soft' or 'hard'."""
 
+        self.uart_rx_saturated = 0
+        """AT-mode reads that filled the whole RX buffer: the reader fell behind
+        the modem, which is the closest thing MicroPython exposes to a UART
+        overrun. Raw HTTP chunks are excluded -- they saturate by design."""
+
         self._op_state = WalterModemOpState.MINIMUM
         """The current operational state of the modem."""
 
@@ -426,6 +431,11 @@ class ModemCore:
             # Raw-chunk deadline: nothing at all has arrived for a whole idle
             # window, so the transfer is dead rather than merely slow.
             raw_before = self.__parser_data.raw_chunk_size
+            if not raw_before and size >= len(incoming_uart_data):
+                # A full buffer of AT-mode traffic means bytes were arriving
+                # faster than this task drained them; the ESP32 driver drops
+                # silently past its own rxbuf, so this is the only warning.
+                self.uart_rx_saturated += 1
             if raw_before and time.ticks_diff(
                 time.ticks_ms(), self.__parser_data.raw_chunk_deadline
             ) > 0:
